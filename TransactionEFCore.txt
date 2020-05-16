@@ -1,0 +1,123 @@
+Khi thực hiện save change cho các tác dụng insert, delete, update database thì ef sẽ wrap những tác vụ đó trong một transaction.
+
+Transaction committed thì tất cả các tác vụ success sẽ đc apply xuống db.
+Transaction roll back thì không có tác vụ nào được apply xuống db.
+
+* Trong ef6 & ef core, có thể multi save change trong 1 single transaction. 
+
+Default Transaction Behavior
+
+Tất cả thay đổi khi gọi trong 1 save change sẽ được apply vào 1 transaciton. Nếu bất kì thay đổi nào fail thì transaction sẽ roll back và tất cả thay đổi sẽ hk đc apply xuống db. Có nghĩa là save change đảm bảo các thay đổi tới đã db diễn ra success, còn không sẽ không chỉnh sữa db nếu diễn ra có lỗi. 
+
+Controlling transactions
+Dbcontext.Database API cung cấp một số lệnh như  begin, commit, and rollback transactions.
+Ví dụ 1 transaciton có 2 save change 
+
+using (var context = new MyContext())
+{
+    using (var transaction = context.Database.BeginTransaction())
+    {
+        try
+        {
+            var customer = context.Customers
+                .Where(c => c.CustomerId == 2)
+                .FirstOrDefault();
+                customer.Address = "43 rue St. Laurent";
+
+            context.SaveChanges();
+             
+            var newCustomer = new Customer
+            {
+                FirstName = "Elizabeth",
+                LastName = "Lincoln",
+                Address = "23 Tsawassen Blvd."
+            };
+             
+            context.Customers.Add(newCustomer);
+            context.SaveChanges();
+
+            transaction.Commit();
+        }
+        catch (Exception)
+        {
+            transaction.Rollback();
+        }
+    }
+}
+
+Cross-context transaction (relational databases only)
+
+Có thể chia sẻ 1 transaction across multiple context. Để chia sẻ 1 transaction phải chia sẻ 1.dbconnection và 2.dbtransaction.
+
+1.Allow connection to be externally provided
+Chia sẻ dbcontection yêu cầu pass 1 conntection vào trong context khi khởi tạo contructor. Cách đơn giản để externally provided là đừng sử dụng dbcontext.onconfiguring method, hãy dùng DbContextOptions và passing vào contructor.
+
+public class BloggingContext : DbContext
+{
+    public BloggingContext(DbContextOptions<BloggingContext> options)
+        : base(options)
+    { }
+
+    public DbSet<Blog> Blogs { get; set; }
+}
+
+ Một cách khác là vẫn sử dụng DbContext.OnConfiguring nhưng phải accept 1 DbConnection  được lưu trữ và sau đó sử dụng trong DbContext.OnConfiguring.
+
+public class BloggingContext : DbContext
+{
+    private DbConnection _connection;
+
+    public BloggingContext(DbConnection connection)
+    {
+      _connection = connection;
+    }
+
+    public DbSet<Blog> Blogs { get; set; }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        optionsBuilder.UseSqlServer(_connection);
+    }
+}
+
+2. Share connection and transaction
+
+Sau khi thực hiện bước 1 bây giờ có thể tạo ra nhiều instances context có cùng connection. DbContext.Database.UseTransaction(DbTransaction) API để liệt kê tất cả context trong 1 transaction.
+
+var options = new DbContextOptionsBuilder<BloggingContext>()
+    .UseSqlServer(new SqlConnection(connectionString))
+    .Options;
+
+using (var context1 = new BloggingContext(options))
+{
+    using (var transaction = context1.Database.BeginTransaction())
+    {
+        try
+        {
+            context1.Blogs.Add(new Blog { Url = "http://blogs.msdn.com/dotnet" });
+            context1.SaveChanges();
+
+            using (var context2 = new BloggingContext(options))
+            {
+                context2.Database.UseTransaction(transaction.GetDbTransaction());
+
+                var blogs = context2.Blogs
+                    .OrderBy(b => b.Url)
+                    .ToList();
+            }
+
+            // Commit transaction if all commands succeed, transaction will auto-rollback
+            // when disposed if either commands fails
+            transaction.Commit();
+        }
+        catch (Exception)
+        {
+            // TODO: Handle failure
+        }
+    }
+}
+
+
+
+
+
